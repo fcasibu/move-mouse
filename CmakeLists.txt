@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 4.1.2)
+project(move VERSION 0.0.0 LANGUAGES C)
+
+set(CMAKE_C_STANDARD 23)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+add_executable(move main.c)
+
+target_compile_options(move PRIVATE -Wall -Wextra -Wpedantic)
+
+target_link_libraries(move
+    "-framework ApplicationServices"
+    "-framework Carbon"
+)
