@@ -45,6 +45,32 @@ pthread_t movement_thread = 0;
 CGFloat screen_width, screen_height;
 bool left_held = false;
 
+typedef struct {
+    bool up;
+    bool down;
+    bool left;
+    bool right;
+} move_input_t;
+
+typedef struct {
+    float screen_width;
+    float screen_height;
+} screen_info_t;
+
+typedef struct {
+    pthread_t movement_thread;
+    move_input_t move_input;
+    screen_info_t screen_info;
+    v2f_t pos;
+    i32 scroll_lines_per_tick;
+    f32 key_hold_time;
+    f32 start_speed;
+    f32 max_speed;
+    f32 ramp_time;
+    bool is_intercepting;
+    bool left_held;
+} context_t;
+
 v2f_t v2f_add(v2f_t v1, v2f_t v2)
 {
     return (v2f_t){ v1.x + v2.x, v1.y + v2.y };
@@ -300,8 +326,8 @@ int main(void)
     screen_height = CGRectGetHeight(bounds);
     set_initial_cursor_pos();
 
-    CGEventMask event_mask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp) |
-                             (1 << kCGEventMouseMoved);
+    CGEventMask event_mask = EventCodeMask(kCGEventKeyDown) | EventCodeMask(kCGEventKeyUp) |
+                             EventCodeMask(kCGEventMouseMoved);
     CFMachPortRef event_tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, 0,
                                                event_mask, event_tap_callback, NULL);
 
