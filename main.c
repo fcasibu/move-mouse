@@ -15,10 +15,23 @@ typedef struct {
     f32 y;
 } v2f_t;
 
+v2f_t v2f_add(v2f_t v1, v2f_t v2);
+v2f_t v2f_scale(v2f_t v, f32 scalar);
+f32 v2f_length(v2f_t v);
+v2f_t v2f_normalize(v2f_t v);
+v2f_t v2f_clamp(v2f_t v, float min_x, float max_x, float min_y, float max_y);
+
+void set_initial_cursor_pos(void);
+void *movement_loop(void *arg);
+CGEventRef event_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRef event,
+                              void *user_info);
+void run_mouse_event(v2f_t pos, CGEventType type, CGMouseButton button);
+void run_scroll_wheel_event(i32 lines_per_tick);
+
 #define v2f_zero() ((v2f_t){ 0, 0 })
 
 const f32 START_SPEED = 20.0F;
-const f32 MAX_SPEED = 1200.0F;
+const f32 MAX_SPEED = 1000.0F;
 const f32 RAMP_TIME = 0.7F;
 const f32 INPUT_DEADZONE = 0.05F;
 const i32 SCROLL_LINES_PER_TICK = 3;
@@ -30,6 +43,7 @@ f32 key_hold_time = 0.0F;
 bool is_intercepting = false;
 pthread_t movement_thread = 0;
 CGFloat screen_width, screen_height;
+bool left_held = false;
 
 v2f_t v2f_add(v2f_t v1, v2f_t v2)
 {
@@ -63,6 +77,21 @@ v2f_t v2f_clamp(v2f_t v, float min_x, float max_x, float min_y, float max_y)
     };
 }
 
+void run_mouse_event(v2f_t pos, CGEventType type, CGMouseButton button)
+{
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(pos.x, pos.y), button);
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+}
+
+void run_scroll_wheel_event(i32 lines_per_tick)
+{
+    CGEventRef event =
+        CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, lines_per_tick);
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+}
+
 void *movement_loop(void *arg)
 {
     (void)arg;
@@ -89,7 +118,6 @@ void *movement_loop(void *arg)
 
         bool moving = (move_dir.x != 0 || move_dir.y != 0);
 
-        // TODO(fcasibu): do we want deceleration
         if (moving) {
             key_hold_time += dt;
 
@@ -97,18 +125,19 @@ void *movement_loop(void *arg)
                 f32 hold_time = key_hold_time - INPUT_DEADZONE;
                 f32 current_speed =
                     START_SPEED + (MAX_SPEED - START_SPEED) * fminf(1.0F, hold_time / RAMP_TIME);
+
                 v2f_t velocity = v2f_scale(move_dir, current_speed);
                 pos = v2f_clamp(v2f_add(pos, v2f_scale(velocity, dt)), 0.0F, (f32)screen_width,
                                 0.0F, (f32)screen_height);
 
-                CGEventRef move = CGEventCreateMouseEvent(
-                    NULL, kCGEventMouseMoved, CGPointMake(pos.x, pos.y), kCGMouseButtonLeft);
-                CGEventPost(kCGHIDEventTap, move);
-                CFRelease(move);
+                run_mouse_event(pos, kCGEventMouseMoved, kCGMouseButtonLeft);
             }
         } else {
             key_hold_time = 0.0F;
         }
+
+        if (left_held)
+            run_mouse_event(pos, kCGEventLeftMouseDragged, kCGMouseButtonLeft);
 
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         i64 elapsed_ns = (end_time.tv_sec - start_time.tv_sec) * (i64)1e9 +
@@ -132,13 +161,22 @@ CGEventRef event_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     (void)proxy;
     (void)user_info;
 
-    if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
+    switch (type) {
+    case kCGEventMouseMoved: {
+        CGPoint point = CGEventGetLocation(event);
+        pos = (v2f_t){ (f32)point.x, (f32)point.y };
+        return event;
+    }
+
+    case kCGEventKeyDown:
+    case kCGEventKeyUp: {
         CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
         CGEventFlags flags = CGEventGetFlags(event);
 
         if (keycode == kVK_Space && (flags & kCGEventFlagMaskAlternate)) {
             if (type == kCGEventKeyDown) {
                 is_intercepting = !is_intercepting;
+
                 printf("Intercepting mode: %s\n", is_intercepting ? "ON" : "OFF");
                 if (is_intercepting && movement_thread == 0) {
                     int ret = pthread_create(&movement_thread, NULL, movement_loop, NULL);
@@ -168,6 +206,7 @@ CGEventRef event_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRe
                 printf("Exiting...\n");
                 CFRunLoopStop(CFRunLoopGetCurrent());
             }
+
             return NULL;
         }
 
@@ -194,39 +233,31 @@ CGEventRef event_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRe
 
             // mouse buttons
             case kVK_ANSI_Q: {
-                CGEventRef click = CGEventCreateMouseEvent(
-                    NULL, is_down ? kCGEventLeftMouseDown : kCGEventLeftMouseUp,
-                    CGPointMake(pos.x, pos.y), kCGMouseButtonLeft);
-                CGEventPost(kCGHIDEventTap, click);
-                CFRelease(click);
+                run_mouse_event(pos, is_down ? kCGEventLeftMouseDown : kCGEventLeftMouseUp,
+                                kCGMouseButtonLeft);
+
+                left_held = is_down;
+
                 return NULL;
             }
             case kVK_ANSI_E: {
-                CGEventRef click = CGEventCreateMouseEvent(
-                    NULL, is_down ? kCGEventRightMouseDown : kCGEventRightMouseUp,
-                    CGPointMake(pos.x, pos.y), kCGMouseButtonRight);
-                CGEventPost(kCGHIDEventTap, click);
-                CFRelease(click);
+                run_mouse_event(pos, is_down ? kCGEventRightMouseDown : kCGEventRightMouseUp,
+                                kCGMouseButtonRight);
+
                 return NULL;
             }
 
             // scrolling keys
             case kVK_ANSI_W: {
-                if (is_down) {
-                    CGEventRef scroll = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine,
-                                                                      1, SCROLL_LINES_PER_TICK);
-                    CGEventPost(kCGHIDEventTap, scroll);
-                    CFRelease(scroll);
-                }
+                if (is_down)
+                    run_scroll_wheel_event(SCROLL_LINES_PER_TICK);
+
                 return NULL;
             }
             case kVK_ANSI_S: {
-                if (is_down) {
-                    CGEventRef scroll = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine,
-                                                                      1, -SCROLL_LINES_PER_TICK);
-                    CGEventPost(kCGHIDEventTap, scroll);
-                    CFRelease(scroll);
-                }
+                if (is_down)
+                    run_scroll_wheel_event(-SCROLL_LINES_PER_TICK);
+
                 return NULL;
             }
 
@@ -234,9 +265,22 @@ CGEventRef event_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRe
                 return NULL;
             }
         }
+
+        return event;
     }
 
-    return event;
+    default:
+        return event;
+    }
+}
+
+void set_initial_cursor_pos(void)
+{
+    CGEventRef event = CGEventCreate(NULL);
+    CGPoint cursor_loc = CGEventGetLocation(event);
+    CFRelease(event);
+
+    pos = (v2f_t){ (f32)cursor_loc.x, (f32)cursor_loc.y };
 }
 
 int main(void)
@@ -254,9 +298,10 @@ int main(void)
     CGRect bounds = CGDisplayBounds(display);
     screen_width = CGRectGetWidth(bounds);
     screen_height = CGRectGetHeight(bounds);
-    pos = (v2f_t){ (f32)(screen_width / 2), (f32)(screen_height / 2) };
+    set_initial_cursor_pos();
 
-    CGEventMask event_mask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp);
+    CGEventMask event_mask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp) |
+                             (1 << kCGEventMouseMoved);
     CFMachPortRef event_tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, 0,
                                                event_mask, event_tap_callback, NULL);
 
